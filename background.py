@@ -4,7 +4,6 @@ import datetime
 import re
 import ast
 import operator
-import subprocess
 import time
 import threading
 
@@ -17,31 +16,36 @@ from faster_whisper import WhisperModel
 from ddgs import DDGS
 from openwakeword.model import Model
 
-# ============================================================
-# CONFIG
-# ============================================================
+try:
+    from paths import PATHS
 
-BASE_DIR = r"C:\PersonalAI"
-DB_FILE = r"C:\PersonalAI\memory.db"
+    BASE_DIR = PATHS["BASE_DIR"]
+    DB_FILE = PATHS["DATABASE"]
+    VOICE_FILE = PATHS["VOICE_WAV"]
+    SERVER_URL = PATHS["SERVER_URL"]
+
+except ImportError:
+    # Fallback for safety if paths.py is missing.
+    import os
+
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    DB_FILE = os.path.join(BASE_DIR, "memory.db")
+    VOICE_FILE = os.path.join(BASE_DIR, "voice.wav")
+    SERVER_URL = "http://127.0.0.1:5000"
+
 
 OLLAMA_MODEL = "llama3.2:3b"
-
-SERVER_URL = "http://127.0.0.1:5000"
 
 MIC_DEVICE = 1
 SAMPLE_RATE = 16000
 CHANNELS = 1
 BLOCK_SIZE = 1280
-
 RECORD_SECONDS = 5
 
 WAKE_WORD = "hey_jarvis"
 WAKE_THRESHOLD = 0.5
 WAKE_COOLDOWN = 2
 
-# ============================================================
-# OPTIONAL SERVER COMMUNICATION
-# ============================================================
 
 try:
     import requests
@@ -49,8 +53,11 @@ except Exception:
     requests = None
 
 
+# =========================
+# SERVER COMMUNICATION
+# =========================
+
 def set_status(state, message=""):
-    """Send Jarvis state to the frontend server."""
     if requests is None:
         return
 
@@ -67,8 +74,7 @@ def set_status(state, message=""):
         pass
 
 
-def send_message(role, message):
-    """Send a conversation message to the frontend."""
+def send_message(speaker, text):
     if requests is None:
         return
 
@@ -76,8 +82,8 @@ def send_message(role, message):
         requests.post(
             SERVER_URL + "/message",
             json={
-                "role": role,
-                "message": message
+                "speaker": speaker,
+                "text": text
             },
             timeout=1
         )
@@ -85,34 +91,34 @@ def send_message(role, message):
         pass
 
 
-# ============================================================
-# MEMORY
-# ============================================================
+# =========================
+# DATABASE
+# =========================
 
 def init_database():
     try:
         conn = sqlite3.connect(DB_FILE)
-        conn.execute(
-            """
+
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS memories (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 memory TEXT NOT NULL,
                 created_at TEXT NOT NULL
             )
-            """
-        )
-        conn.execute(
-            """
+        """)
+
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS reminders (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 text TEXT NOT NULL,
                 remind_at TEXT NOT NULL,
                 active INTEGER DEFAULT 1
             )
-            """
-        )
+        """)
+
         conn.commit()
         conn.close()
+
     except Exception as e:
         print("Database error:", e)
 
@@ -145,15 +151,12 @@ def get_memories(limit=20):
     try:
         conn = sqlite3.connect(DB_FILE)
 
-        rows = conn.execute(
-            """
+        rows = conn.execute("""
             SELECT memory, created_at
             FROM memories
             ORDER BY id DESC
             LIMIT ?
-            """,
-            (limit,)
-        ).fetchall()
+        """, (limit,)).fetchall()
 
         conn.close()
 
@@ -170,17 +173,15 @@ def format_memories(limit=20):
     if not memories:
         return "I don't have any saved memories yet."
 
-    lines = ["Here is what I remember:"]
-
-    for memory, created_at in memories:
-        lines.append(f"- {memory}")
-
-    return "\n".join(lines)
+    return "\n".join(
+        ["Here is what I remember:"] +
+        [f"- {memory}" for memory, _ in memories]
+    )
 
 
-# ============================================================
-# VOICE OUTPUT
-# ============================================================
+# =========================
+# TEXT TO SPEECH
+# =========================
 
 def speak(text):
     if not text:
@@ -189,18 +190,15 @@ def speak(text):
     print("Jarvis:", text)
 
     send_message("assistant", text)
-
     set_status("SPEAKING", text)
 
     try:
         engine = pyttsx3.init()
-
         engine.setProperty("rate", 175)
         engine.setProperty("volume", 1.0)
 
         engine.say(text)
         engine.runAndWait()
-
         engine.stop()
 
     except Exception as e:
@@ -209,9 +207,9 @@ def speak(text):
     set_status("READY", 'Say "Hey Jarvis"')
 
 
-# ============================================================
+# =========================
 # WHISPER
-# ============================================================
+# =========================
 
 print("Loading Whisper...")
 
@@ -226,7 +224,6 @@ print("Whisper ready.")
 
 def listen():
     set_status("LISTENING", "Listening...")
-
     print("🎤 Listening...")
 
     try:
@@ -240,16 +237,18 @@ def listen():
 
         sd.wait()
 
-        audio_int16 = (audio[:, 0] * 32767).astype(np.int16)
+        audio_int16 = (
+            audio[:, 0] * 32767
+        ).astype(np.int16)
 
-        with wave.open("voice.wav", "wb") as wf:
+        with wave.open(VOICE_FILE, "wb") as wf:
             wf.setnchannels(1)
             wf.setsampwidth(2)
             wf.setframerate(SAMPLE_RATE)
             wf.writeframes(audio_int16.tobytes())
 
-        segments, info = whisper_model.transcribe(
-            "voice.wav",
+        segments, _ = whisper_model.transcribe(
+            VOICE_FILE,
             beam_size=1,
             vad_filter=True
         )
@@ -271,9 +270,9 @@ def listen():
         return ""
 
 
-# ============================================================
+# =========================
 # WEB SEARCH
-# ============================================================
+# =========================
 
 def web_search(query):
     print("🌐 Searching web:", query)
@@ -295,15 +294,11 @@ def web_search(query):
         formatted = []
 
         for i, result in enumerate(results, start=1):
-            title = result.get("title", "")
-            url = result.get("href", "")
-            body = result.get("body", "")
-
             formatted.append(
                 f"RESULT {i}\n"
-                f"Title: {title}\n"
-                f"URL: {url}\n"
-                f"Description: {body}"
+                f"Title: {result.get('title', '')}\n"
+                f"URL: {result.get('href', '')}\n"
+                f"Description: {result.get('body', '')}"
             )
 
         return "\n\n".join(formatted)
@@ -313,9 +308,9 @@ def web_search(query):
         return ""
 
 
-# ============================================================
+# =========================
 # SAFE CALCULATOR
-# ============================================================
+# =========================
 
 ALLOWED_OPERATORS = {
     ast.Add: operator.add,
@@ -343,12 +338,14 @@ def safe_calc(node):
             left = safe_calc(node.left)
             right = safe_calc(node.right)
 
-            # Prevent accidentally huge local calculations.
             if operator_type is ast.Pow:
                 if abs(left) > 100000 or abs(right) > 20:
                     raise ValueError("Calculation too large")
 
-            return ALLOWED_OPERATORS[operator_type](left, right)
+            return ALLOWED_OPERATORS[operator_type](
+                left,
+                right
+            )
 
     if isinstance(node, ast.UnaryOp):
         operator_type = type(node.op)
@@ -364,47 +361,62 @@ def safe_calc(node):
 def calculate(expression):
     expression = expression.lower().strip()
 
-    # Remove common natural-language phrases first.
-    expression = expression.replace("what is", "")
-    expression = expression.replace("what's", "")
-    expression = expression.replace("calculate", "")
-    expression = expression.replace("please", "")
-    expression = expression.replace("the answer to", "")
+    for phrase in [
+        "what is the answer to",
+        "what's the answer to",
+        "what is",
+        "what's",
+        "please calculate",
+        "calculate",
+        "please",
+        "the answer to",
+    ]:
+        expression = expression.replace(
+            phrase,
+            ""
+        )
 
-    replacements = [
+    for old, new in [
         ("multiplied by", "*"),
         ("divided by", "/"),
         ("to the power of", "**"),
+        ("raised to the power of", "**"),
         ("times", "*"),
         ("plus", "+"),
         ("minus", "-"),
         ("modulo", "%"),
         ("mod", "%"),
-    ]
+    ]:
+        expression = expression.replace(
+            old,
+            new
+        )
 
-    for old, new in replacements:
-        expression = expression.replace(old, new)
-
-    # Remove punctuation/words that are not part of an expression.
     expression = expression.replace("?", "")
-    expression = re.sub(r"[^0-9+\-*/%.()\s]", "", expression)
 
-    # IMPORTANT: strip again after cleaning.
-    # Without this, "What is 25 plus 17?" becomes
-    # " 25 + 17" and ast.parse() can report "unexpected indent".
-    expression = expression.strip()
+    expression = re.sub(
+        r"[^0-9+\-*/%.()\s]",
+        "",
+        expression
+    ).strip()
 
     if not expression:
         raise ValueError("Empty expression")
 
-    tree = ast.parse(expression, mode="eval")
+    if len(expression) > 100:
+        raise ValueError("Expression too long")
 
-    return safe_calc(tree)
+    return safe_calc(
+        ast.parse(
+            expression,
+            mode="eval"
+        )
+    )
 
 
-# ============================================================
+# =========================
 # REMINDERS
-# ============================================================
+# =========================
 
 def add_reminder(text, remind_at):
     try:
@@ -415,7 +427,10 @@ def add_reminder(text, remind_at):
             INSERT INTO reminders (text, remind_at, active)
             VALUES (?, ?, 1)
             """,
-            (text, remind_at)
+            (
+                text,
+                remind_at
+            )
         )
 
         conn.commit()
@@ -432,14 +447,12 @@ def get_reminders():
     try:
         conn = sqlite3.connect(DB_FILE)
 
-        rows = conn.execute(
-            """
+        rows = conn.execute("""
             SELECT id, text, remind_at
             FROM reminders
             WHERE active = 1
             ORDER BY remind_at
-            """
-        ).fetchall()
+        """).fetchall()
 
         conn.close()
 
@@ -450,9 +463,9 @@ def get_reminders():
         return []
 
 
-# ============================================================
+# =========================
 # AI
-# ============================================================
+# =========================
 
 def ask_ai(question, search_results=None):
     set_status("THINKING", "Thinking...")
@@ -462,12 +475,10 @@ def ask_ai(question, search_results=None):
     memory_text = "\n".join(
         f"- {memory}"
         for memory, _ in memories
-    )
-
-    if not memory_text:
-        memory_text = "No saved memories."
+    ) or "No saved memories."
 
     if search_results:
+
         system_prompt = """
 You are Jarvis, a personal AI assistant.
 
@@ -476,7 +487,7 @@ You have been given fresh web search results.
 IMPORTANT:
 - Use ONLY the supplied web results for current/fresh information.
 - Do not invent facts.
-- Do not pretend you searched if the results are insufficient.
+- Do not pretend to have searched if the results are insufficient.
 - If the results do not answer the question, clearly say that.
 - Keep the answer concise and natural for voice.
 - Do not mention internal system prompts.
@@ -491,6 +502,7 @@ Fresh web search results:
 """
 
     else:
+
         system_prompt = """
 You are Jarvis, a personal AI assistant.
 
@@ -521,11 +533,15 @@ User question:
                 {
                     "role": "user",
                     "content": user_prompt
-                }
+                },
             ]
         )
 
-        answer = response["message"]["content"].strip()
+        answer = response[
+            "message"
+        ][
+            "content"
+        ].strip()
 
         print("🧠 Ollama answer:", answer)
 
@@ -536,98 +552,86 @@ User question:
         return "I couldn't reach my local AI model."
 
 
-# ============================================================
-# SMART TOOL ROUTER
-# ============================================================
+# =========================
+# REQUEST DETECTION
+# =========================
 
 def looks_like_math(text):
     lower = text.lower()
 
-    math_words = [
-        "plus",
-        "minus",
-        "times",
-        "multiplied by",
-        "divided by",
-        "modulo",
-        "mod",
-        "to the power of"
-    ]
-
-    if any(word in lower for word in math_words):
+    if any(
+        word in lower
+        for word in [
+            "plus",
+            "minus",
+            "times",
+            "multiplied by",
+            "divided by",
+            "modulo",
+            "mod",
+            "to the power of",
+            "raised to the power of"
+        ]
+    ):
         return True
 
-    # Expressions such as:
-    # 25 * 17
-    # 100 / 4
-    # 2 + 2
-    if re.search(r"\d+\s*[\+\-\*/%]\s*\d+", lower):
-        return True
-
-    return False
+    return bool(
+        re.search(
+            r"\d+\s*[\+\-\*/%]\s*\d+",
+            lower
+        )
+    )
 
 
 def looks_like_web_request(text):
     lower = text.lower()
 
-    web_words = [
-        "latest",
-        "current",
-        "news",
-        "weather",
-        "today",
-        "recent",
-        "what happened",
-        "this week",
-        "this month",
-        "right now",
-        "live",
-        "price of",
-        "stock price",
-        "exchange rate",
-        "score",
-        "scores",
-        "who won",
-        "trending",
-        "breaking",
-        "update on"
-    ]
-
-    return any(word in lower for word in web_words)
+    return any(
+        word in lower
+        for word in [
+            "latest",
+            "current",
+            "news",
+            "weather",
+            "today",
+            "recent",
+            "what happened",
+            "this week",
+            "this month",
+            "right now",
+            "live",
+            "price of",
+            "stock price",
+            "exchange rate",
+            "score",
+            "scores",
+            "who won",
+            "trending",
+            "breaking",
+            "update on"
+        ]
+    )
 
 
 def looks_like_memory_query(text):
     lower = text.lower()
 
-    memory_phrases = [
-        "what do you remember",
-        "what do you know about me",
-        "show my memories",
-        "show memories",
-        "my memories",
-        "what have you remembered",
-        "do you remember my",
-        "do you remember that"
-    ]
-
-    return any(phrase in lower for phrase in memory_phrases)
+    return any(
+        phrase in lower
+        for phrase in [
+            "what do you remember",
+            "what do you know about me",
+            "show my memories",
+            "show memories",
+            "my memories",
+            "what have you remembered",
+            "do you remember my",
+            "do you remember that"
+        ]
+    )
 
 
 def route_request(user_input):
-    """
-    Decide which tool should handle the request.
-
-    Returns:
-        exit
-        remember
-        memory
-        time
-        date
-        calculator
-        web
-        ai
-    """
-
     text = user_input.strip()
     lower = text.lower()
 
@@ -677,9 +681,9 @@ def route_request(user_input):
     return "ai"
 
 
-# ============================================================
+# =========================
 # WAKE WORD
-# ============================================================
+# =========================
 
 print("Loading wake word engine...")
 
@@ -697,7 +701,10 @@ def wait_for_wake_word():
 
     def callback(indata, frames, time_info, status):
         if status:
-            print("Wake audio status:", status)
+            print(
+                "Wake audio status:",
+                status
+            )
 
         try:
             audio = (
@@ -706,31 +713,38 @@ def wait_for_wake_word():
 
             prediction = wake_model.predict(audio)
 
-            score = prediction.get(WAKE_WORD, 0)
+            score = prediction.get(
+                WAKE_WORD,
+                0
+            )
 
             now = time.time()
 
             if (
-                score > WAKE_THRESHOLD
+                np.isfinite(score)
+                and score > WAKE_THRESHOLD
                 and now - last_detection[0] > WAKE_COOLDOWN
             ):
                 print(
-                    f"\n🎯 Hey Jarvis! Score: {score:.2f}"
+                    f"\n🎯 Hey Jarvis! "
+                    f"Score: {score:.2f}"
                 )
 
                 last_detection[0] = now
                 detected_event.set()
 
         except Exception as e:
-            print("Wake word callback error:", e)
+            print(
+                "Wake word callback error:",
+                e
+            )
 
     set_status(
         "READY",
         'Say "Hey Jarvis"'
     )
 
-    print()
-    print("🤖 Jarvis is ready.")
+    print("\n🤖 Jarvis is ready.")
     print('Say: "Hey Jarvis"')
 
     try:
@@ -748,57 +762,60 @@ def wait_for_wake_word():
         return True
 
     except Exception as e:
-        print("Wake word stream error:", e)
+        print(
+            "Wake word stream error:",
+            e
+        )
+
         return False
 
 
-# ============================================================
-# COMMAND HANDLERS
-# ============================================================
+# =========================
+# REQUEST HANDLER
+# =========================
 
 def handle_request(user_input):
     route = route_request(user_input)
 
-    print("🔀 Router selected:", route)
-
-    # ----------------------------
-    # EXIT
-    # ----------------------------
+    print(
+        "🔀 Router selected:",
+        route
+    )
 
     if route == "exit":
         speak("Goodbye.")
         return False
 
-    # ----------------------------
-    # REMEMBER
-    # ----------------------------
-
     if route == "remember":
-        memory_text = user_input[len("remember "):].strip()
+
+        memory_text = user_input[
+            len("remember "):
+        ].strip()
 
         if memory_text:
+
             if remember(memory_text):
                 speak("I'll remember that.")
             else:
-                speak("I couldn't save that memory.")
+                speak(
+                    "I couldn't save that memory."
+                )
+
         else:
-            speak("What would you like me to remember?")
+            speak(
+                "What would you like me to remember?"
+            )
 
         return True
-
-    # ----------------------------
-    # MEMORY QUERY
-    # ----------------------------
 
     if route == "memory":
-        speak(format_memories(20))
+        speak(
+            format_memories(20)
+        )
         return True
 
-    # ----------------------------
-    # TIME
-    # ----------------------------
-
     if route == "time":
+
         current_time = datetime.datetime.now().strftime(
             "%I:%M %p"
         )
@@ -809,100 +826,111 @@ def handle_request(user_input):
 
         return True
 
-    # ----------------------------
-    # DATE
-    # ----------------------------
-
     if route == "date":
+
         today = datetime.datetime.now().strftime(
             "%A, %B %d, %Y"
         )
 
-        speak(f"Today is {today}.")
+        speak(
+            f"Today is {today}."
+        )
 
         return True
-
-    # ----------------------------
-    # CALCULATOR
-    # ----------------------------
 
     if route == "calculator":
+
         expression = user_input.strip()
 
-        if expression.lower().startswith("calculate "):
-            expression = expression[10:].strip()
+        if expression.lower().startswith(
+            "calculate "
+        ):
+            expression = expression[
+                10:
+            ].strip()
 
         try:
-            result = calculate(expression)
 
-            if isinstance(result, float):
-                if result.is_integer():
-                    result = int(result)
+            result = calculate(
+                expression
+            )
 
-            speak(f"The answer is {result}.")
+            if (
+                isinstance(result, float)
+                and result.is_integer()
+            ):
+                result = int(result)
+
+            speak(
+                f"The answer is {result}."
+            )
 
         except Exception as e:
-            print("Calculator error:", e)
-            speak("I couldn't calculate that.")
+
+            print(
+                "Calculator error:",
+                e
+            )
+
+            speak(
+                "I couldn't calculate that."
+            )
 
         return True
 
-    # ----------------------------
-    # WEB SEARCH
-    # ----------------------------
-
     if route == "web":
+
         set_status(
             "THINKING",
             "Searching the web..."
         )
 
-        results = web_search(user_input)
+        results = web_search(
+            user_input
+        )
 
         if results:
-            answer = ask_ai(
-                user_input,
-                results
+
+            speak(
+                ask_ai(
+                    user_input,
+                    results
+                )
             )
 
-            speak(answer)
-
         else:
+
             speak(
-                "I couldn't find current information "
-                "on the web."
+                "I couldn't find current information on the web."
             )
 
         return True
 
-    # ----------------------------
-    # NORMAL AI
-    # ----------------------------
-
-    answer = ask_ai(user_input)
-
-    speak(answer)
+    speak(
+        ask_ai(user_input)
+    )
 
     return True
 
 
-# ============================================================
+# =========================
 # MAIN
-# ============================================================
+# =========================
 
 def main():
     init_database()
 
-    print()
-    print("=" * 55)
+    print("\n" + "=" * 55)
     print("          JARVIS PERSONAL AI")
     print("=" * 55)
+    print("Install folder:", BASE_DIR)
+    print("Database:", DB_FILE)
+    print("Voice file:", VOICE_FILE)
     print("Model:", OLLAMA_MODEL)
     print("Wake word: Hey Jarvis")
     print("Microphone device:", MIC_DEVICE)
     print("Server:", SERVER_URL)
-    print("=" * 55)
-    print()
+    print("=" * 55 + "\n")
 
     set_status(
         "READY",
@@ -910,36 +938,26 @@ def main():
     )
 
     while True:
+
         try:
-            # ------------------------------------------------
-            # WAIT FOR WAKE WORD
-            # ------------------------------------------------
 
             if not wait_for_wake_word():
                 time.sleep(1)
                 continue
-
-            # ------------------------------------------------
-            # AFTER WAKE WORD
-            # ------------------------------------------------
 
             speak("Yes?")
 
             user_input = listen()
 
             if not user_input:
-                speak("I didn't hear anything.")
+                speak(
+                    "I didn't hear anything."
+                )
                 continue
 
-            # ------------------------------------------------
-            # HANDLE REQUEST
-            # ------------------------------------------------
-
-            should_continue = handle_request(
+            if not handle_request(
                 user_input
-            )
-
-            if not should_continue:
+            ):
                 break
 
             set_status(
@@ -948,8 +966,10 @@ def main():
             )
 
         except KeyboardInterrupt:
-            print()
-            print("Stopping Jarvis...")
+
+            print(
+                "\nStopping Jarvis..."
+            )
 
             set_status(
                 "OFFLINE",
@@ -959,6 +979,7 @@ def main():
             break
 
         except Exception as e:
+
             print(
                 "Main loop error:",
                 repr(e)

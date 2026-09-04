@@ -1,14 +1,22 @@
 from flask import Flask, jsonify, request
 import sqlite3
 import os
-from datetime import datetime
 
 
 app = Flask(__name__)
 
-BASE_DIR = r"C:\PersonalAI"
+
+# =========================
+# PORTABLE PATHS
+# =========================
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_FILE = os.path.join(BASE_DIR, "memory.db")
 
+
+# =========================
+# JARVIS STATE
+# =========================
 
 jarvis_state = {
     "status": "READY",
@@ -78,8 +86,6 @@ def get_reminders():
 @app.route("/status", methods=["GET", "POST"])
 def status():
 
-    global jarvis_state
-
     if request.method == "POST":
 
         data = request.get_json()
@@ -107,14 +113,8 @@ def message():
     if data:
 
         jarvis_state["messages"].append({
-            "speaker": data.get(
-                "speaker",
-                "SYSTEM"
-            ),
-            "text": data.get(
-                "text",
-                ""
-            )
+            "speaker": data.get("speaker", "SYSTEM"),
+            "text": data.get("text", "")
         })
 
     return jsonify({
@@ -187,6 +187,8 @@ def health():
 if __name__ == "__main__":
 
     print("Jarvis communication server started.")
+    print("JARVIS folder:", BASE_DIR)
+    print("Database:", DB_FILE)
 
     app.run(
         host="127.0.0.1",
