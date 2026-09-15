@@ -8,7 +8,10 @@ from ctypes import wintypes
 from PIL import Image
 
 
+# ========================================================
 # SINGLE FRONTEND INSTANCE
+# ========================================================
+
 ERROR_ALREADY_EXISTS = 183
 
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -47,7 +50,10 @@ if mutex_error == ERROR_ALREADY_EXISTS:
 print("JARVIS frontend instance lock acquired.")
 
 
+# ========================================================
 # PATHS
+# ========================================================
+
 try:
     from paths import PATHS
 
@@ -92,7 +98,10 @@ SERVER_SCRIPT = PATHS["SERVER"]
 SERVER = PATHS["SERVER_URL"]
 
 
+# ========================================================
 # FILES
+# ========================================================
+
 LOGO_FILE = os.path.join(
     BASE_DIR,
     "jarvis_icon.png"
@@ -104,12 +113,18 @@ ICON_FILE = os.path.join(
 )
 
 
+# ========================================================
 # CUSTOMTKINTER
+# ========================================================
+
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
 
+# ========================================================
 # JARVIS UI
+# ========================================================
+
 class JarvisUI(ctk.CTk):
 
     def __init__(self):
@@ -231,7 +246,10 @@ class JarvisUI(ctk.CTk):
         )
 
 
+    # ====================================================
     # UI
+    # ====================================================
+
     def build_ui(self):
 
         # ------------------------------------------------
@@ -523,24 +541,6 @@ class JarvisUI(ctk.CTk):
             side="left"
         )
 
-        # ------------------------------------------------
-        # STOP BUTTON
-        # ------------------------------------------------
-
-        self.stop_button = ctk.CTkButton(
-            footer,
-            text="STOP",
-            command=self.stop_jarvis,
-            width=110,
-            height=38,
-            font=("Segoe UI", 13, "bold")
-        )
-
-        self.stop_button.pack(
-            side="left",
-            padx=(30, 0)
-        )
-
         self.version_label = ctk.CTkLabel(
             footer,
             text="JARVIS AI • Local",
@@ -552,7 +552,10 @@ class JarvisUI(ctk.CTk):
         )
 
 
+    # ====================================================
     # START FLASK SERVER
+    # ====================================================
+
     def start_server(self):
 
         if not os.path.exists(SERVER_SCRIPT):
@@ -622,7 +625,10 @@ class JarvisUI(ctk.CTk):
             )
 
 
+    # ====================================================
     # START BACKGROUND JARVIS
+    # ====================================================
+
     def start_jarvis(self):
 
         if self.closing:
@@ -689,7 +695,10 @@ class JarvisUI(ctk.CTk):
             )
 
 
+    # ====================================================
     # UPDATE UI
+    # ====================================================
+
     def update_ui(self):
 
         if self.closing:
@@ -801,7 +810,10 @@ class JarvisUI(ctk.CTk):
             )
 
 
+    # ====================================================
     # CHAT MESSAGE INGESTION
+    # ====================================================
+
     def ingest_messages(
         self,
         messages
@@ -863,7 +875,10 @@ class JarvisUI(ctk.CTk):
             )
 
 
+    # ====================================================
     # CLEAR PAGE
+    # ====================================================
+
     def clear_page(self):
 
         self.status_frame.pack_forget()
@@ -907,7 +922,10 @@ class JarvisUI(ctk.CTk):
             del self.credits_panel
 
 
+    # ====================================================
     # CHAT
+    # ====================================================
+
     def show_chat(self):
 
         self.current_page = "chat"
@@ -989,7 +1007,10 @@ class JarvisUI(ctk.CTk):
         )
 
 
+    # ====================================================
     # MEMORY
+    # ====================================================
+
     def show_memory(self):
 
         self.current_page = "memory"
@@ -1124,7 +1145,10 @@ class JarvisUI(ctk.CTk):
             )
 
 
+    # ====================================================
     # REMINDERS
+    # ====================================================
+
     def show_reminders(self):
 
         self.current_page = "reminders"
@@ -1246,7 +1270,10 @@ class JarvisUI(ctk.CTk):
             )
 
 
+    # ====================================================
     # SYSTEM
+    # ====================================================
+
     def show_system(self):
 
         self.current_page = "system"
@@ -1290,7 +1317,10 @@ class JarvisUI(ctk.CTk):
         )
 
 
+    # ====================================================
     # CREDITS
+    # ====================================================
+
     def show_credits(self):
 
         self.current_page = "credits"
@@ -1364,11 +1394,23 @@ class JarvisUI(ctk.CTk):
             weight=1
         )
 
-        team_members = [            
+        team_members = [
+            (
+                "G.Sravya",
+                "FrontEnd Developer"
+            ),
             (
                 "B.Gagan",
                 "BackEnd Developer"
             ),
+            (
+                "Ch.Satya",
+                "AI Model Handler"
+            ),
+            (
+                "D.Nishilitha",
+                "Voice Recognition & Response Handler"
+            )
         ]
 
         for i, (name, role) in enumerate(
@@ -1422,7 +1464,10 @@ class JarvisUI(ctk.CTk):
         )
 
 
+    # ====================================================
     # ADD MESSAGE
+    # ====================================================
+
     def add_message(
         self,
         speaker,
@@ -1465,41 +1510,10 @@ class JarvisUI(ctk.CTk):
             self.refresh_chat()
 
 
-    # STOP JARVIS
-    def stop_jarvis(self):
-
-        try:
-
-            response = requests.post(
-                f"{SERVER}/stop",
-                timeout=2
-            )
-
-            if response.ok:
-
-                print("JARVIS STOP requested.")
-
-                self.status_title.configure(
-                    text="◉ READY"
-                )
-
-                self.status_text.configure(
-                    text='Say "Hey Jarvis"'
-                )
-
-            else:
-
-                print(
-                    "Failed to stop JARVIS:",
-                    response.text
-                )
-
-        except Exception as e:
-
-            print("STOP error:", e)
-
-
+    # ====================================================
     # CLOSE
+    # ====================================================
+
     def close_app(self):
 
         if self.closing:
@@ -1519,7 +1533,10 @@ class JarvisUI(ctk.CTk):
         self.destroy()
 
 
+# ========================================================
 # START APPLICATION
+# ========================================================
+
 if __name__ == "__main__":
 
     app = JarvisUI()

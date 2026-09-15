@@ -6,7 +6,7 @@ import ast
 import operator
 import time
 import threading
-
+import os
 import numpy as np
 import sounddevice as sd
 import wave
@@ -15,6 +15,45 @@ import pyttsx3
 from faster_whisper import WhisperModel
 from ddgs import DDGS
 from openwakeword.model import Model
+
+# SINGLE JARVIS INSTANCE
+import ctypes
+from ctypes import wintypes
+import sys
+
+ERROR_ALREADY_EXISTS = 183
+
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+CreateMutexW = kernel32.CreateMutexW
+CreateMutexW.argtypes = [
+    wintypes.LPVOID,
+    wintypes.BOOL,
+    wintypes.LPCWSTR
+]
+CreateMutexW.restype = wintypes.HANDLE
+
+CloseHandle = kernel32.CloseHandle
+CloseHandle.argtypes = [wintypes.HANDLE]
+CloseHandle.restype = wintypes.BOOL
+
+JARVIS_MUTEX = CreateMutexW(
+    None,
+    False,
+    "Local\\JARVIS_Background_Assistant"
+)
+
+if not JARVIS_MUTEX:
+    raise ctypes.WinError(ctypes.get_last_error())
+
+mutex_error = ctypes.get_last_error()
+
+if mutex_error == ERROR_ALREADY_EXISTS:
+    print("JARVIS background assistant is already running.")
+    CloseHandle(JARVIS_MUTEX)
+    sys.exit(0)
+
+print("JARVIS background instance lock acquired.")
 
 try:
     from paths import PATHS
@@ -52,11 +91,12 @@ try:
 except Exception:
     requests = None
 
+# STOP / CANCEL CONTROL
+stop_event = threading.Event()
+STOP_FILE = os.path.join(BASE_DIR, "jarvis_stop.flag")
+current_engine = None
 
-# =========================
 # SERVER COMMUNICATION
-# =========================
-
 def set_status(state, message=""):
     if requests is None:
         return
@@ -91,10 +131,7 @@ def send_message(speaker, text):
         pass
 
 
-# =========================
 # DATABASE
-# =========================
-
 def init_database():
     try:
         conn = sqlite3.connect(DB_FILE)
@@ -179,12 +216,15 @@ def format_memories(limit=20):
     )
 
 
-# =========================
 # TEXT TO SPEECH
-# =========================
-
 def speak(text):
+    global current_engine
+
     if not text:
+        return
+
+    if stop_event.is_set():
+        stop_event.clear()
         return
 
     print("Jarvis:", text)
@@ -193,26 +233,71 @@ def speak(text):
     set_status("SPEAKING", text)
 
     try:
-        engine = pyttsx3.init()
-        engine.setProperty("rate", 175)
-        engine.setProperty("volume", 1.0)
+        current_engine = pyttsx3.init()
+        current_engine.setProperty("rate", 175)
+        current_engine.setProperty("volume", 1.0)
 
-        engine.say(text)
-        engine.runAndWait()
-        engine.stop()
+        current_engine.say(text)
+
+        # Run speech in small steps so the STOP watcher can interrupt it.
+        current_engine.startLoop(False)
+        while current_engine.isBusy():
+            if stop_event.is_set():
+                current_engine.stop()
+                print("JARVIS speech stopped.")
+                break
+
+            current_engine.iterate()
+            time.sleep(0.05)
+        current_engine.endLoop()
 
     except Exception as e:
         print("TTS error:", e)
 
-    set_status("READY", 'Say "Hey Jarvis"')
+    finally:
+        if current_engine is not None:
+            try:
+                current_engine.stop()
+            except Exception:
+                pass
+
+        current_engine = None
+        set_status("READY", 'Say "Hey Jarvis"')
 
 
-# =========================
+def stop_watcher():
+    """Watch for a STOP request sent by the frontend through Flask."""
+
+    print("JARVIS stop watcher started.")
+
+    while True:
+        try:
+            if os.path.exists(STOP_FILE):
+                try:
+                    os.remove(STOP_FILE)
+                except Exception:
+                    pass
+
+                stop_event.set()
+                print("JARVIS STOP signal received.")
+
+                if current_engine is not None:
+                    try:
+                        current_engine.stop()
+                    except Exception:
+                        pass
+
+                set_status("READY", 'Say "Hey Jarvis"')
+
+        except Exception as e:
+            print("Stop watcher error:", e)
+
+        time.sleep(0.1)
+
+
 # WHISPER
-# =========================
-
 print("Loading Whisper...")
-
+print("BEFORE WHISPER MODEL - PID:", os.getpid(), flush=True)
 whisper_model = WhisperModel(
     "tiny",
     device="cpu",
@@ -270,10 +355,7 @@ def listen():
         return ""
 
 
-# =========================
 # WEB SEARCH
-# =========================
-
 def web_search(query):
     print("🌐 Searching web:", query)
 
@@ -308,10 +390,7 @@ def web_search(query):
         return ""
 
 
-# =========================
 # SAFE CALCULATOR
-# =========================
-
 ALLOWED_OPERATORS = {
     ast.Add: operator.add,
     ast.Sub: operator.sub,
@@ -414,10 +493,7 @@ def calculate(expression):
     )
 
 
-# =========================
 # REMINDERS
-# =========================
-
 def add_reminder(text, remind_at):
     try:
         conn = sqlite3.connect(DB_FILE)
@@ -463,10 +539,7 @@ def get_reminders():
         return []
 
 
-# =========================
 # AI
-# =========================
-
 def ask_ai(question, search_results=None):
     set_status("THINKING", "Thinking...")
 
@@ -523,7 +596,7 @@ User question:
     try:
         print("🧠 Asking Ollama...")
 
-        response = ollama.chat(
+        response_stream = ollama.chat(
             model=OLLAMA_MODEL,
             messages=[
                 {
@@ -534,28 +607,45 @@ User question:
                     "role": "user",
                     "content": user_prompt
                 },
-            ]
+            ],
+            stream=True
         )
 
-        answer = response[
-            "message"
-        ][
-            "content"
-        ].strip()
+        answer_parts = []
+
+        for chunk in response_stream:
+            if stop_event.is_set():
+                print("JARVIS AI response stopped.")
+                return ""
+
+            try:
+                piece = chunk["message"]["content"]
+            except (KeyError, TypeError):
+                piece = ""
+
+            if piece:
+                answer_parts.append(piece)
+
+        if stop_event.is_set():
+            print("JARVIS AI response stopped.")
+            return ""
+
+        answer = "".join(answer_parts).strip()
 
         print("🧠 Ollama answer:", answer)
 
         return answer
 
     except Exception as e:
+        if stop_event.is_set():
+            print("JARVIS AI response stopped.")
+            return ""
+
         print("Ollama error:", e)
         return "I couldn't reach my local AI model."
 
 
-# =========================
 # REQUEST DETECTION
-# =========================
-
 def looks_like_math(text):
     lower = text.lower()
 
@@ -637,13 +727,22 @@ def route_request(user_input):
 
     if lower in {
         "exit",
+        "that's it",
         "quit",
         "goodbye",
-        "stop",
         "shutdown jarvis",
         "close jarvis"
     }:
         return "exit"
+
+    if lower in {
+        "stop",
+        "cancel",
+        "stop jarvis",
+        "jarvis stop",
+        "enough"
+    }:
+        return "stop"
 
     if lower.startswith("remember "):
         return "remember"
@@ -681,12 +780,9 @@ def route_request(user_input):
     return "ai"
 
 
-# =========================
 # WAKE WORD
-# =========================
-
 print("Loading wake word engine...")
-
+print("BEFORE WAKE MODEL - PID:", os.getpid(), flush=True)
 wake_model = Model(
     wakeword_models=[WAKE_WORD],
     inference_framework="onnx"
@@ -770,10 +866,7 @@ def wait_for_wake_word():
         return False
 
 
-# =========================
 # REQUEST HANDLER
-# =========================
-
 def handle_request(user_input):
     route = route_request(user_input)
 
@@ -781,6 +874,23 @@ def handle_request(user_input):
         "🔀 Router selected:",
         route
     )
+
+    if route == "stop":
+        stop_event.set()
+
+        if current_engine is not None:
+            try:
+                current_engine.stop()
+            except Exception:
+                pass
+
+        set_status(
+            "READY",
+            'Say "Hey Jarvis"'
+        )
+
+        print("JARVIS STOPPED.")
+        return True
 
     if route == "exit":
         speak("Goodbye.")
@@ -913,12 +1023,15 @@ def handle_request(user_input):
     return True
 
 
-# =========================
 # MAIN
-# =========================
-
 def main():
     init_database()
+
+    # Watch for STOP requests from the frontend.
+    threading.Thread(
+        target=stop_watcher,
+        daemon=True
+    ).start()
 
     print("\n" + "=" * 55)
     print("          JARVIS PERSONAL AI")
